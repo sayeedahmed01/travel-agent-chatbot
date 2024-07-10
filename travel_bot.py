@@ -6,10 +6,62 @@ from sqlalchemy.orm import sessionmaker
 from openai import OpenAI
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
+from collections import Counter
 
 # Download necessary NLTK data
 nltk.download('punkt')
 nltk.download('stopwords')
+
+
+class IntentDetector:
+    def __init__(self):
+        self.keyword_intents = {
+            'package_info': ['package', 'tour', 'vacation', 'holiday', 'itinerary', 'trip', 'travel plan'],
+            'flight_info': ['flight', 'airplane', 'airport', 'airline', 'depart', 'arrive'],
+            'hotel_info': ['hotel', 'accommodation', 'stay', 'room', 'book', 'reservation']
+        }
+        self.threshold = 0.3
+
+    def keyword_match(self, query):
+        words = set(query.lower().split())
+        intent_scores = Counter()
+
+        for intent, keywords in self.keyword_intents.items():
+            matches = words.intersection(keywords)
+            score = len(matches) / len(words)
+            intent_scores[intent] = score
+
+        top_intent = intent_scores.most_common(1)[0]
+        return top_intent[0] if top_intent[1] >= self.threshold else None
+
+    def gpt_classify(self, query, openai_client):
+        prompt = f"""
+        Classify the following travel-related query into one of these categories:
+        1. package_info: Specific travel package inquiries
+        2. flight_info: Flight-related questions
+        3. hotel_info: Hotel or accommodation queries
+        4. general_knowledge: Any other travel-related query or general information
+
+        Query: "{query}"
+
+        Category:
+        """
+        response = openai_client.client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system",
+                 "content": "You are a travel query classifier. Respond with only the category name and nothing else."},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        return response.choices[0].message.content.strip().lower()
+
+    def detect_intent(self, query, openai_client):
+        keyword_intent = self.keyword_match(query)
+        if keyword_intent:
+            return keyword_intent
+        else:
+            return self.gpt_classify(query, openai_client)
 
 
 class Database:
@@ -21,11 +73,15 @@ class Database:
         session = self.Session()
         try:
             result = session.execute(text(query))
-            return result.fetchall()
+            columns = result.keys()
+            rows = result.fetchall()
+            return columns, rows
         except Exception as e:
-            return str(e)
+            # Return an empty result set with columns in case of an error
+            return [], []
         finally:
             session.close()
+
 
 class OpenAIClient:
     def __init__(self, api_key):
@@ -33,33 +89,51 @@ class OpenAIClient:
         self.client = OpenAI(api_key=api_key)
 
     def generate_sql_query(self, message):
-        prompt = f"""
-        Given the following user question about travel packages, generate an SQL query to fetch the relevant information from the 'travel_packages', 'flights', and 'hotels' tables.
-        
-        The 'travel_packages' table has columns: 
-        package_id, package_name, destination, city, duration_days, price_usd, package_description, travel_dates, available_slots, package_type;
-        Sample Data in the table:
-        | package_id | package_name | destination | city | duration_days | price_usd | package_description | travel_dates | available_slots | package_type |
-        |----|--------|-------------|----------|------|-------------|
-        |1|tropical paradise|maldives|malé|7|2500|enjoy a week in the beautiful maldives with beachside resorts.|2024-07-01 to 2024-07-08|20|beach|
+        prompt = \
+            f"""
+            Given the following user question about travel packages, generate an SQL query to fetch the relevant information from the 'travel_packages', 'flights', and 'hotels' tables from the Travel_DB database.
+            Assume the database is a SQLite database. Make sure the queries are all in lowercase even if the user input is in uppercase. Use ONLY 'LIKE' for matching string columns. Do not include the table schema or any other information.
 
-        The 'flights' table has columns: 
-        flight_id, airline, departure_city, arrival_city, departure_time, arrival_time, price, available_seats;
-        Sample Data in the table:
-        | flight_id | airline | departure_city | arrival_city | departure_time | arrival_time | price | available_seats |
-        |----|--------|-------------|----------|------|-------------|
-        |1|Air Maldives|Malé|Paris|08:00|14:00|750|150|
+            The 'travel_packages' table has columns:
+            package_id, package_name, country, city, duration_days, price_usd, package_description, package_type;
+            Sample Data in the table:
+            | package_id | package_name | country | city | duration_days | price_usd | package_description | package_type |
+            |----|--------|-------------|----------|------|-------------|
+            |1|tropical paradise|maldives|malé|7|2500|enjoy a week in the beautiful maldives with beachside resorts.|beach|
 
-        The 'hotels' table has columns:
-        hotel_id, name, city, country, star_rating, price_per_night, amenities, available_rooms;
-        Sample Data in the table:
-        | hotel_id | name | city | country | star_rating | price_per_night | amenities | available_rooms |
-        |----|--------|-------------|----------|------|-------------|
-        |1|Hotel Paradise|Malé|Maldives|5|300|"Pool, Spa, WiFi"|20|
 
-        User question: "{message}"
+            The 'flights' table has columns:
+            flight_id, airline, departure_city, arrival_city, departure_time, arrival_time, price, days_of_week;
+            Logic for days_of_week:
+            Weekday      Letter
+            -------      ------
+            Sunday       S
+            Monday       M
+            Tuesday      T
+            Wednesday    W
+            Thursday     R
+            Friday       F
+            Saturday     U
 
-        SQL query:
+            Example flight flies on Monday, Sat, and Sunday - then it would be the string: "SMU" 
+            
+            Sample Data in the table:
+            | flight_id | airline | departure_city | arrival_city | departure_time | arrival_time | price | days_of_week |
+            |----|--------|-------------|----------|------|-------------|
+            |1|air maldives|malé|paris|08:00|14:00|750|mwf|
+
+
+            The 'hotels' table has columns:
+            hotel_id, name, city, country, star_rating, price_per_night, amenities;
+            Sample Data in the table:
+            | hotel_id | name | city | country | star_rating | price_per_night | amenities |
+            |----|--------|-------------|----------|------|-------------|
+            |1|hotel paradise|malé|maldives|5|300|"pool, spa, wifi"|
+
+
+            User question: "{message}"
+
+            SQL query:
         """
         response = self.client.chat.completions.create(
             model="gpt-3.5-turbo",
@@ -85,57 +159,84 @@ class OpenAIClient:
         )
         return response.choices[0].message.content.strip()
 
+
 class TravelAgentChatbot:
     def __init__(self, db, openai_client):
         self.db = db
         self.openai_client = openai_client
+        self.intent_detector = IntentDetector()
 
-    def is_package_query(self, message):
-        package_keywords = ['book', 'booking', 'cost', 'package', 'price', 'tour', 'trip', 'vacation', 'holiday', 'travel plan', 'itinerary']
-        tokens = word_tokenize(message.lower())
-        return any(keyword in tokens for keyword in package_keywords)
+    def chat(self, message):
+        intent = self.intent_detector.detect_intent(message, self.openai_client)
+        if intent == 'package_info':
+            return self.handle_package_query(message)
+        elif intent == 'flight_info':
+            return self.handle_flight_query(message)
+        elif intent == 'hotel_info':
+            return self.handle_hotel_query(message)
+        else:
+            return self.handle_general_knowledge(message)
 
-    def format_package_results(self, results):
-        if not results:
-            return "I'm sorry, I couldn't find any travel packages matching your criteria."
-
-        def capitalize_words(text):
-            return ' '.join(word.capitalize() for word in text.split())
-
-        response = "Here are the travel packages I found:\n\n"
-        for package in results:
-            package_name, destination, city, duration_days, price_usd, package_description, travel_dates, available_slots, package_type = package[1:]
-            response += f"Package Name: {capitalize_words(package_name)}\n"
-            response += f"Countries: {capitalize_words(destination)}\n"
-            response += f"Cities: {capitalize_words(city)}\n"
-            response += f"Duration: {duration_days} days\n"
-            response += f"Price: ${price_usd:.2f}\n"
-            response += f"Description: {capitalize_words(package_description)}\n"
-            response += f"Travel Dates: {capitalize_words(travel_dates)}\n"
-            response += f"Available Slots: {available_slots}\n"
-            response += f"Package Type: {capitalize_words(package_type)}\n"
-            response += "\n" + "-"*50 + "\n\n"
-        return response
+    def handle_general_knowledge(self, message):
+        return self.openai_client.query_chatgpt(message)
 
     def handle_package_query(self, message):
         sql_query = self.openai_client.generate_sql_query(message)
         if sql_query:
-            results = self.db.execute_sql_query(sql_query)
-            response = self.format_package_results(results)
+            columns, results = self.db.execute_sql_query(sql_query)
+            response = self.format_results(columns, results)
         else:
             response = "I'm sorry, I couldn't understand your package query. Could you please rephrase it?"
         return response
 
-    def chat(self, message):
-        if self.is_package_query(message):
-            return self.handle_package_query(message)
+    def handle_flight_query(self, message):
+        sql_query = self.openai_client.generate_sql_query(message)
+        if sql_query:
+            columns, results = self.db.execute_sql_query(sql_query)
+            response = self.format_results(columns, results)
         else:
-            return self.openai_client.query_chatgpt(message)
+            response = "I'm sorry, I couldn't understand your flight query. Could you please rephrase it?"
+        return response
 
-# Initialize components
-db = Database('sqlite:////Users/sayeedahmed/travelDB.db')
+    def handle_hotel_query(self, message):
+        sql_query = self.openai_client.generate_sql_query(message)
+        print(sql_query)
+        if sql_query:
+            columns, results = self.db.execute_sql_query(sql_query)
+            response = self.format_results(columns, results)
+        else:
+            response = "I'm sorry, I couldn't understand your hotel query. Could you please rephrase it?"
+        return response
+
+    def format_results(self, columns, results):
+        if not results:
+            return "I'm sorry, I couldn't find any matching results."
+
+        response = "Here are the results I found:\n\n"
+        for row in results:
+            row_dict = dict(zip(columns, row))
+            for col, val in row_dict.items():
+                if isinstance(val, str):
+                    if ' ' in val:
+                        val = val.title()
+                    else:
+                        val = val.capitalize()
+                response += f"{col.replace('_', ' ').capitalize()}: {val}\n"
+            response += "\n" + "-" * 50 + "\n\n"
+        return response
+
+
 # Load environment variables from .env file
 load_dotenv()
+
+# Get the database URL from environment variables
+db_url = os.getenv('DATABASE_URL')
+
+if not db_url:
+    raise ValueError("Database URL not found. Please set the DATABASE_URL environment variable in the .env file.")
+
+# Initialize components
+db = Database(db_url)
 
 # Get the OpenAI API key from environment variables
 openai_api_key = os.getenv('OPENAI_API_KEY')
@@ -149,6 +250,7 @@ chatbot = TravelAgentChatbot(db, openai_client)
 # Flask API setup
 app = Flask(__name__)
 
+
 @app.route('/chat', methods=['POST'])
 def chat():
     data = request.json
@@ -156,7 +258,9 @@ def chat():
     if not message:
         return jsonify({"error": "No message provided"}), 400
     response = chatbot.chat(message)
+    print(response)
     return jsonify({"response": response})
+
 
 if __name__ == '__main__':
     app.run(debug=True)
