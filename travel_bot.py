@@ -1,10 +1,16 @@
-import os
+import json
 import logging
+import os
+import re
+import traceback
 from collections import Counter
 
 import nltk
 from dotenv import load_dotenv
-from flask import Flask, request, jsonify
+from flask import Flask, request, Response, stream_with_context
+from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer
+from nltk.tokenize import word_tokenize
 from openai import OpenAI
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
@@ -15,9 +21,20 @@ logging.basicConfig(filename='travel_bot.log', level=logging.INFO,
 logger = logging.getLogger(__name__)
 
 
-# Download necessary NLTK data
-nltk.download('punkt')
-nltk.download('stopwords')
+def ensure_nltk_data():
+    """Ensure necessary NLTK data is downloaded."""
+    try:
+        nltk.data.find('tokenizers/punkt')
+    except LookupError:
+        nltk.download('punkt')
+    try:
+        nltk.data.find('corpora/stopwords')
+    except LookupError:
+        nltk.download('stopwords')
+
+
+# Ensure necessary NLTK data is available
+ensure_nltk_data()
 
 
 class IntentDetector:
@@ -28,14 +45,43 @@ class IntentDetector:
             'hotel_info': ['hotel', 'accommodation', 'stay', 'room', 'book', 'reservation']
         }
         self.threshold = 0.3
+        self.stop_words = set(stopwords.words('english'))
+        self.lemmatizer = WordNetLemmatizer()
+
+
+    def clean_token(self, token):
+        # Remove non-alphanumeric characters from the beginning and end of the token
+        cleaned = re.sub(r'^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$', '', token)
+
+        # If the cleaned token is numeric, return it as is
+        if cleaned.isnumeric():
+            return cleaned
+
+        # For non-numeric tokens, remove any remaining non-alphabetic characters
+        return re.sub(r'[^a-zA-Z]', '', cleaned)
+
+
+    def preprocess_text(self, text):
+        # Tokenize and convert to lowercase
+        tokens = word_tokenize(text.lower())
+
+        # Clean tokens
+        tokens = [self.clean_token(token) for token in tokens]
+
+        # Remove empty strings and stop words, then lemmatize
+        tokens = [self.lemmatizer.lemmatize(token) for token in tokens
+                  if token and token not in self.stop_words]
+
+        return tokens
 
     def keyword_match(self, query):
-        words = set(query.lower().split())
+        preprocessed_query = self.preprocess_text(query)
         intent_scores = Counter()
 
         for intent, keywords in self.keyword_intents.items():
-            matches = words.intersection(keywords)
-            score = len(matches) / len(words)
+            preprocessed_keywords = set(self.preprocess_text(' '.join(keywords)))
+            matches = set(preprocessed_query).intersection(preprocessed_keywords)
+            score = len(matches) / len(preprocessed_query) if preprocessed_query else 0
             intent_scores[intent] = score
 
         top_intent = intent_scores.most_common(1)[0]
@@ -166,6 +212,21 @@ class OpenAIClient:
         )
         return response.choices[0].message.content.strip()
 
+    def query_chatgpt_stream(self, message):
+        response = self.client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": """You are a helpful travel assistant.
+                                              Answer questions about flight times, distances between cities, and general travel information.
+                                              Do not provide specific package details or prices."""},
+                {"role": "user", "content": message}
+            ],
+            stream=True
+        )
+        for chunk in response:
+            if chunk.choices[0].delta.content is not None:
+                yield chunk.choices[0].delta.content
+
 
 class TravelAgentChatbot:
     def __init__(self, db, openai_client):
@@ -256,8 +317,8 @@ if not openai_api_key:
 openai_client = OpenAIClient(openai_api_key)
 chatbot = TravelAgentChatbot(db, openai_client)
 
-# Flask API setup
 app = Flask(__name__)
+
 
 @app.route('/chat', methods=['POST'])
 def chat():
@@ -266,14 +327,24 @@ def chat():
         message = data.get('message')
         if not message:
             logger.warning("No message provided in the request")
-            return jsonify({"error": "No message provided"}), 400
+            return Response(json.dumps({"error": "No message provided"}), status=400, mimetype='application/json')
 
-        response = chatbot.chat(message)
-        logger.info(f"Processed message: {message}")
-        return jsonify({"response": response})
+        def generate_response():
+            try:
+                response = chatbot.chat(message)
+                for chunk in response.split():
+                    yield json.dumps({"chunk": chunk}) + "\n"
+            except Exception as e:
+                logger.error(f"Error generating response: {str(e)}")
+                yield json.dumps({"error": "An error occurred while generating the response"}) + "\n"
+
+        logger.info(f"Processing message: {message}")
+        return Response(stream_with_context(generate_response()), mimetype='application/json')
     except Exception as e:
         logger.error(f"An error occurred while processing the request: {str(e)}")
-        return jsonify({"response": "I apologize, but I encountered an unexpected issue. Please try again later."}), 500
+        logger.error(traceback.format_exc())
+        return Response(json.dumps({"error": "An unexpected error occurred"}), status=500, mimetype='application/json')
+
 
 if __name__ == '__main__':
     app.run(debug=True)
