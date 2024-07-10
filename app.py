@@ -26,9 +26,9 @@ if prompt := st.chat_input("What would you like to know?"):
         response_data = response.json()
         api_response = response_data.get("response", "I'm sorry, I couldn't process your request at the moment.")
     except requests.exceptions.RequestException as e:
-        api_response = f"Error: {e}"
+        api_response = "I'm sorry, but I'm having trouble connecting to my knowledge base right now. Please try again later."
     except ValueError:
-        api_response = "Error: Received an invalid response from the API."
+        api_response = "I apologize, but I received an unexpected response. Let's try again."
 
     # Display assistant response in chat message container
     with st.chat_message("assistant"):

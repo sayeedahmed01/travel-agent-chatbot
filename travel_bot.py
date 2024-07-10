@@ -1,12 +1,19 @@
 import os
+import logging
+from collections import Counter
+
 import nltk
-from nltk.tokenize import word_tokenize
+from dotenv import load_dotenv
+from flask import Flask, request, jsonify
+from openai import OpenAI
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
-from openai import OpenAI
-from flask import Flask, request, jsonify
-from dotenv import load_dotenv
-from collections import Counter
+
+# Setting up logging
+logging.basicConfig(filename='travel_bot.log', level=logging.INFO,
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 
 # Download necessary NLTK data
 nltk.download('punkt')
@@ -233,6 +240,7 @@ load_dotenv()
 db_url = os.getenv('DATABASE_URL')
 
 if not db_url:
+    logger.error("Database URL not found. Please set the DATABASE_URL environment variable in the .env file.")
     raise ValueError("Database URL not found. Please set the DATABASE_URL environment variable in the .env file.")
 
 # Initialize components
@@ -242,6 +250,7 @@ db = Database(db_url)
 openai_api_key = os.getenv('OPENAI_API_KEY')
 
 if not openai_api_key:
+    logger.error("OpenAI API key not found. Please set the OPENAI_API_KEY environment variable in the .env file.")
     raise ValueError("OpenAI API key not found. Please set the OPENAI_API_KEY environment variable in the .env file.")
 
 openai_client = OpenAIClient(openai_api_key)
@@ -250,17 +259,21 @@ chatbot = TravelAgentChatbot(db, openai_client)
 # Flask API setup
 app = Flask(__name__)
 
-
 @app.route('/chat', methods=['POST'])
 def chat():
-    data = request.json
-    message = data.get('message')
-    if not message:
-        return jsonify({"error": "No message provided"}), 400
-    response = chatbot.chat(message)
-    print(response)
-    return jsonify({"response": response})
+    try:
+        data = request.json
+        message = data.get('message')
+        if not message:
+            logger.warning("No message provided in the request")
+            return jsonify({"error": "No message provided"}), 400
 
+        response = chatbot.chat(message)
+        logger.info(f"Processed message: {message}")
+        return jsonify({"response": response})
+    except Exception as e:
+        logger.error(f"An error occurred while processing the request: {str(e)}")
+        return jsonify({"response": "I apologize, but I encountered an unexpected issue. Please try again later."}), 500
 
 if __name__ == '__main__':
     app.run(debug=True)
