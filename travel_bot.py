@@ -44,7 +44,7 @@ class IntentDetector:
             'flight_info': ['flight', 'airplane', 'airport', 'airline', 'depart', 'arrive'],
             'hotel_info': ['hotel', 'accommodation', 'stay', 'room', 'book', 'reservation']
         }
-        self.threshold = 0.3
+        self.threshold = 0.5
         self.stop_words = set(stopwords.words('english'))
         self.lemmatizer = WordNetLemmatizer()
 
@@ -144,8 +144,16 @@ class OpenAIClient:
     def generate_sql_query(self, message):
         prompt = \
             f"""
-            Given the following user question about travel packages, generate an SQL query to fetch the relevant information from the 'travel_packages', 'flights', and 'hotels' tables from the Travel_DB database.
-            Assume the database is a SQLite database. Make sure the queries are all in lowercase even if the user input is in uppercase. Use ONLY 'LIKE' for matching string columns. Do not include the table schema or any other information.
+            Given the following user question about travel packages, generate an SQL query to fetch relevant information from the 'travel_packages', 'flights', and 'hotels' tables from the Travel_DB database.
+            Assume the database is a SQLite database. Make sure the queries are all in lowercase, even if the user input is in uppercase. Do not include the table schema or any other information.
+
+            Enhance your query to:
+            1. Prioritize important keywords (e.g., honeymoon, family) by checking for related terms in 'package_type' or 'package_description'.
+            2. Include date filters if the month or time period is mentioned ignore it.
+            3. Order the results based on user-specified criteria like budget, rating, or features. For example, if 'cheapest' or 'top rated' 
+            is mentioned, order accordingly and limit the results to the top 5 or 10 entries.
+            4. Use soft matching for keywords that might not exactly match the database fields but are related (e.g., using LIKE or regular expressions).
+            5. Provide default fallbacks by selecting broader categories or the most popular options if exact matches aren't found.
 
             The 'travel_packages' table has columns:
             package_id, package_name, country, city, duration_days, price_usd, package_description, package_type;
@@ -154,27 +162,18 @@ class OpenAIClient:
             |----|--------|-------------|----------|------|-------------|
             |1|tropical paradise|maldives|malé|7|2500|enjoy a week in the beautiful maldives with beachside resorts.|beach|
 
-
             The 'flights' table has columns:
             flight_id, airline, departure_city, arrival_city, departure_time, arrival_time, price, days_of_week;
+            
             Logic for days_of_week:
-            Weekday      Letter
-            -------      ------
-            Sunday       S
-            Monday       M
-            Tuesday      T
-            Wednesday    W
-            Thursday     R
-            Friday       F
-            Saturday     U
-
+            - S: Sunday, M: Monday, T: Tuesday, W: Wednesday, R: Thursday, F: Friday, U: Saturday
+            
             Example flight flies on Monday, Sat, and Sunday - then it would be the string: "SMU" 
             
             Sample Data in the table:
             | flight_id | airline | departure_city | arrival_city | departure_time | arrival_time | price | days_of_week |
             |----|--------|-------------|----------|------|-------------|
             |1|air maldives|malé|paris|08:00|14:00|750|mwf|
-
 
             The 'hotels' table has columns:
             hotel_id, name, city, country, star_rating, price_per_night, amenities;
@@ -183,9 +182,8 @@ class OpenAIClient:
             |----|--------|-------------|----------|------|-------------|
             |1|hotel paradise|malé|maldives|5|300|"pool, spa, wifi"|
 
-
             User question: "{message}"
-
+            
             SQL query:
         """
         response = self.client.chat.completions.create(
@@ -264,7 +262,7 @@ class TravelAgentChatbot:
 
     def format_results(self, columns, results):
         if not results:
-            return "I'm sorry, I couldn't find any matching results."
+            return "I'm sorry, I couldn't find any matching results. Could you please try rephrasing it?"
 
         response = "Here are the results I found:\n\n"
         for row in results:
