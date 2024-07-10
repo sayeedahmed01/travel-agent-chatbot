@@ -212,20 +212,6 @@ class OpenAIClient:
         )
         return response.choices[0].message.content.strip()
 
-    def query_chatgpt_stream(self, message):
-        response = self.client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": """You are a helpful travel assistant.
-                                              Answer questions about flight times, distances between cities, and general travel information.
-                                              Do not provide specific package details or prices."""},
-                {"role": "user", "content": message}
-            ],
-            stream=True
-        )
-        for chunk in response:
-            if chunk.choices[0].delta.content is not None:
-                yield chunk.choices[0].delta.content
 
 
 class TravelAgentChatbot:
