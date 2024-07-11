@@ -156,6 +156,7 @@ class OpenAIClient:
             5. Provide default fallbacks by selecting broader categories or the most popular options if exact matches aren't found.
             6. If given a location, prioritize results from that location or nearby areas. 
             7. Always limit output to 5 results max always.
+            8. Never use the Delete or Update commands in the SQL query.
 
             The 'travel_packages' table has columns:
             package_id, package_name, country, city, duration_days, price_usd, package_description, package_type;
@@ -284,18 +285,21 @@ class TravelAgentChatbot:
 # Load environment variables from .env file
 load_dotenv()
 
-# Get the database URL from environment variables
-db_url = os.getenv('DATABASE_URL')
-
-if not db_url:
-    logger.error("Database URL not found. Please set the DATABASE_URL environment variable in the .env file.")
-    raise ValueError("Database URL not found. Please set the DATABASE_URL environment variable in the .env file.")
+# # Get the database URL from environment variables
+# db_url = os.getenv('DATABASE_URL')
+#
+# if not db_url:
+#     logger.error("Database URL not found. Please set the DATABASE_URL environment variable in the .env file.")
+#     raise ValueError("Database URL not found. Please set the DATABASE_URL environment variable in the .env file.")
 
 # Initialize components
-db = Database(db_url)
+db = Database('sqlite:///TravelDB')
 
 # Get the OpenAI API key from environment variables
 openai_api_key = os.getenv('OPENAI_API_KEY')
+
+# Set the OpenAI API key manually
+# openai_api_key = "YOUR_OPENAI_API_KEY"
 
 if not openai_api_key:
     logger.error("OpenAI API key not found. Please set the OPENAI_API_KEY environment variable in the .env file.")
