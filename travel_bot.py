@@ -154,6 +154,8 @@ class OpenAIClient:
             is mentioned, order accordingly and limit the results to the top 5 or 10 entries.
             4. Use soft matching for keywords that might not exactly match the database fields but are related (e.g., using LIKE or regular expressions).
             5. Provide default fallbacks by selecting broader categories or the most popular options if exact matches aren't found.
+            6. If given a location, prioritize results from that location or nearby areas. 
+            7. Always limit output to 5 results max always.
 
             The 'travel_packages' table has columns:
             package_id, package_name, country, city, duration_days, price_usd, package_description, package_type;
@@ -196,6 +198,7 @@ class OpenAIClient:
         )
 
         generated_query = response.choices[0].message.content.strip().replace("```sql", "").replace("```", "").strip()
+        logger.info(f"Generated SQL query: {generated_query}")
         return generated_query if generated_query else None
 
     def query_chatgpt(self, message):
